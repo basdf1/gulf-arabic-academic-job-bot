@@ -1,3 +1,5 @@
+print(">>> MAIN.PY LOADED <<<", flush=True)
+
 from .database import (
     init_database,
     add_job,
@@ -19,11 +21,11 @@ def process_job(job):
     country = job.get("country", "")
     job_url = job.get("job_url", "")
 
-    print()
-    print("-" * 60)
-    print(f"JOB: {title}")
-    print(f"COUNTRY: {country}")
-    print(f"URL: {job_url}")
+    print(flush=True)
+    print("-" * 60, flush=True)
+    print(f"JOB: {title}", flush=True)
+    print(f"COUNTRY: {country}", flush=True)
+    print(f"URL: {job_url}", flush=True)
 
     # --------------------------------
     # 1. Check relevance
@@ -35,13 +37,19 @@ def process_job(job):
         location=country,
     ):
 
-        print("[FILTER] Rejected")
+        print(
+            "[FILTER] Rejected",
+            flush=True,
+        )
 
         return {
             "result": "REJECTED"
         }
 
-    print("[FILTER] Relevant")
+    print(
+        "[FILTER] Relevant",
+        flush=True,
+    )
 
     # --------------------------------
     # 2. Check duplicate
@@ -49,7 +57,10 @@ def process_job(job):
 
     if job_exists(job_url):
 
-        print("[DATABASE] Already exists")
+        print(
+            "[DATABASE] Already exists",
+            flush=True,
+        )
 
         return {
             "result": "DUPLICATE"
@@ -59,7 +70,10 @@ def process_job(job):
     # 3. Verify application
     # --------------------------------
 
-    print("[CHECKER] Checking application...")
+    print(
+        "[CHECKER] Checking application...",
+        flush=True,
+    )
 
     verification = verify_job_application(
         job_url
@@ -67,7 +81,7 @@ def process_job(job):
 
     status = verification.get(
         "status",
-        "UNKNOWN"
+        "UNKNOWN",
     )
 
     deadline = verification.get(
@@ -80,20 +94,24 @@ def process_job(job):
 
     reason = verification.get(
         "reason",
-        ""
+        "",
     )
 
     print(
-        f"[CHECKER] Status: {status}"
+        f"[CHECKER] Status: {status}",
+        flush=True,
     )
 
     if deadline:
+
         print(
-            f"[CHECKER] Deadline: {deadline}"
+            f"[CHECKER] Deadline: {deadline}",
+            flush=True,
         )
 
     print(
-        f"[CHECKER] Reason: {reason}"
+        f"[CHECKER] Reason: {reason}",
+        flush=True,
     )
 
     # --------------------------------
@@ -104,7 +122,8 @@ def process_job(job):
     if status != "OPEN":
 
         print(
-            "[RESULT] Not confirmed open"
+            "[RESULT] Not confirmed open",
+            flush=True,
         )
 
         return {
@@ -120,16 +139,16 @@ def process_job(job):
         title=title,
         organization=job.get(
             "organization",
-            ""
+            "",
         ),
         country=country,
         city=job.get(
             "city",
-            ""
+            "",
         ),
         source=job.get(
             "source",
-            ""
+            "",
         ),
         job_url=job_url,
         application_url=(
@@ -146,7 +165,8 @@ def process_job(job):
     if job_id is None:
 
         print(
-            "[DATABASE] Could not add job"
+            "[DATABASE] Could not add job",
+            flush=True,
         )
 
         return {
@@ -154,7 +174,8 @@ def process_job(job):
         }
 
     print(
-        "[RESULT] NEW OPEN JOB!"
+        "[RESULT] NEW OPEN JOB!",
+        flush=True,
     )
 
     return {
@@ -169,12 +190,21 @@ def run():
     Main bot process.
     """
 
-    print()
-    print("=" * 60)
+    print(flush=True)
     print(
-        "GULF ARABIC ACADEMIC JOB BOT"
+        "=" * 60,
+        flush=True,
     )
-    print("=" * 60)
+
+    print(
+        "GULF ARABIC ACADEMIC JOB BOT",
+        flush=True,
+    )
+
+    print(
+        "=" * 60,
+        flush=True,
+    )
 
     # --------------------------------
     # Database
@@ -183,17 +213,24 @@ def run():
     init_database()
 
     print(
-        "[DATABASE] Ready"
+        "[DATABASE] Ready",
+        flush=True,
     )
 
     # --------------------------------
     # Collect UAEU jobs
     # --------------------------------
 
+    print(
+        "[MAIN] Starting UAEU collector...",
+        flush=True,
+    )
+
     jobs = collect_uaeu_jobs()
 
     print(
-        f"[MAIN] Jobs collected: {len(jobs)}"
+        f"[MAIN] Jobs collected: {len(jobs)}",
+        flush=True,
     )
 
     # --------------------------------
@@ -218,7 +255,7 @@ def run():
 
         result_type = result.get(
             "result",
-            "UNKNOWN"
+            "UNKNOWN",
         )
 
         if result_type in statistics:
@@ -229,18 +266,34 @@ def run():
     # Final report
     # --------------------------------
 
-    print()
-    print("=" * 60)
-    print("FINAL RESULT")
-    print("=" * 60)
+    print(flush=True)
+
+    print(
+        "=" * 60,
+        flush=True,
+    )
+
+    print(
+        "FINAL RESULT",
+        flush=True,
+    )
+
+    print(
+        "=" * 60,
+        flush=True,
+    )
 
     for key, value in statistics.items():
 
         print(
-            f"{key}: {value}"
+            f"{key}: {value}",
+            flush=True,
         )
 
-    print("=" * 60)
+    print(
+        "=" * 60,
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
