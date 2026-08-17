@@ -1,8 +1,8 @@
 import re
 import requests
 from bs4 import BeautifulSoup
-
-from .config import CLOSED_TERMS, OPEN_TERMS
+from datetime import datetime, date
+from urllib.parse import urljoin
 
 
 USER_AGENT = (
@@ -12,10 +12,63 @@ USER_AGENT = (
 )
 
 
-def fetch_page(url, timeout=20):
+# كلمات تعني أن التقديم مغلق
+CLOSED_TERMS = [
+    "closed",
+    "expired",
+    "position filled",
+    "filled",
+    "no longer accepting applications",
+    "applications are closed",
+    "application closed",
+    "deadline has passed",
+    "vacancy closed",
+
+    "انتهى التقديم",
+    "التقديم مغلق",
+    "انتهت فترة التقديم",
+    "الوظيفة مغلقة",
+    "تم شغل الوظيفة",
+]
+
+
+# كلمات تعني أن الوظيفة مفتوحة
+OPEN_TERMS = [
+    "apply now",
+    "apply",
+    "submit application",
+    "applications are open",
+    "how to apply",
+    "open until filled",
+    "open until filled.",
+
+    "تقديم",
+    "قدم الآن",
+    "التقديم مفتوح",
+    "طريقة التقديم",
+]
+
+
+# أسماء الأشهر الإنجليزية
+MONTHS = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+
+
+def fetch_page(url, timeout=30):
     """
-    Download a job/application page.
-    Returns HTML or None if the page cannot be accessed.
+    Download the job/application page.
     """
 
     if not url:
@@ -24,57 +77,50 @@ def fetch_page(url, timeout=20):
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": USER_AGENT},
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+            },
             timeout=timeout,
             allow_redirects=True,
         )
 
         if response.status_code != 200:
+            print(
+                f"[CHECKER] HTTP {response.status_code}: {url}"
+            )
             return None
 
         return response.text
 
-    except requests.RequestException:
+    except requests.RequestException as error:
+        print(f"[CHECKER] Request failed: {error}")
         return None
 
 
 def clean_text(html):
-    """Convert HTML into readable text."""
+    """
+    Convert HTML into readable lowercase text.
+    """
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # Remove scripts/styles
-    for element in soup(["script", "style", "noscript"]):
+    for element in soup(
+        ["script", "style", "noscript", "svg"]
+    ):
         element.decompose()
 
-    return " ".join(soup.stripped_strings).lower()
+    return " ".join(
+        soup.stripped_strings
+    ).lower()
 
 
-def find_deadline(text):
+def find_apply_link(html, base_url):
     """
-    Try to find common deadline formats.
-    This is only a first-stage detector.
+    Find a likely application link.
     """
 
-    patterns = [
-        r"deadline[:\s-]+([0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4})",
-        r"closing date[:\s-]+([0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4})",
-        r"application deadline[:\s-]+([0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{2,4})",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-
-        if match:
-            return match.group(1)
-
-    return None
-
-
-def has_apply_button(soup):
-    """
-    Look for links/buttons that appear to lead to an application.
-    """
+    soup = BeautifulSoup(html, "html.parser")
 
     apply_words = [
         "apply",
@@ -86,69 +132,264 @@ def has_apply_button(soup):
         "التقديم",
     ]
 
-    for element in soup.find_all(["a", "button", "input"]):
+    for element in soup.find_all("a", href=True):
 
-        text = element.get_text(" ", strip=True).lower()
+        text = element.get_text(
+            " ",
+            strip=True
+        ).lower()
 
-        value = element.get("value", "")
-        value = str(value).lower()
+        href = element.get("href")
 
-        combined = f"{text} {value}"
+        if not href:
+            continue
 
-        if any(word in combined for word in apply_words):
-            return True
+        combined = f"{text} {href.lower()}"
 
-    return False
+        if any(
+            word in combined
+            for word in apply_words
+        ):
+            return urljoin(
+                base_url,
+                href
+            )
+
+    return None
 
 
-def check_application_status(url):
+def extract_close_date(text):
     """
-    Determine whether an application appears to be open.
+    Try to find a closing/deadline date.
 
     Returns:
-        OPEN
-        CLOSED
-        UNKNOWN
+        datetime.date
+        or None
     """
 
-    html = fetch_page(url)
+    # Example:
+    # Close Date: 30/09/2026
+    numeric_patterns = [
+        r"close date\s*[:\-]?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})",
+        r"closing date\s*[:\-]?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})",
+        r"deadline\s*[:\-]?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})",
+        r"application deadline\s*[:\-]?\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})",
+    ]
 
-    if not html:
-        return "UNKNOWN"
+    for pattern in numeric_patterns:
 
-    soup = BeautifulSoup(html, "html.parser")
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
 
-    text = clean_text(html)
+        if match:
 
-    # Closed status always has priority.
+            day = int(match.group(1))
+            month = int(match.group(2))
+            year = int(match.group(3))
+
+            try:
+                return date(
+                    year,
+                    month,
+                    day
+                )
+            except ValueError:
+                pass
+
+    # Example:
+    # Close Date: September 30, 2026
+    month_names = "|".join(
+        MONTHS.keys()
+    )
+
+    month_pattern = (
+        rf"(?:close date|closing date|deadline|"
+        rf"application deadline)"
+        rf"\s*[:\-]?\s*"
+        rf"({month_names})\s+"
+        rf"(\d{{1,2}}),?\s+"
+        rf"(\d{{4}})"
+    )
+
+    match = re.search(
+        month_pattern,
+        text,
+        re.IGNORECASE
+    )
+
+    if match:
+
+        month_name = (
+            match.group(1).lower()
+        )
+
+        month = MONTHS.get(
+            month_name
+        )
+
+        day = int(match.group(2))
+        year = int(match.group(3))
+
+        try:
+            return date(
+                year,
+                month,
+                day
+            )
+        except ValueError:
+            pass
+
+    return None
+
+
+def check_explicit_status(text):
+    """
+    Check explicit OPEN/CLOSED wording.
+    """
+
+    # Closed always has priority.
     for term in CLOSED_TERMS:
 
-        if term.lower() in text:
+        if term in text:
             return "CLOSED"
 
-    # Look for an application button/link.
-    if has_apply_button(soup):
-
-        # We found an application mechanism.
-        return "OPEN"
-
-    # Look for explicit open wording.
     for term in OPEN_TERMS:
 
-        if term.lower() in text:
+        if term in text:
             return "OPEN"
 
     return "UNKNOWN"
 
 
-def verify_job_application(url):
+def check_application_status(url):
     """
-    Public function used by the bot.
+    Main application-status checker.
+
+    Rules:
+
+    1. Explicit closed status -> CLOSED
+    2. Past deadline -> CLOSED
+    3. Future deadline -> OPEN
+    4. Open-until-filled -> OPEN
+    5. Working Apply button -> OPEN
+    6. Otherwise -> UNKNOWN
     """
 
-    status = check_application_status(url)
+    html = fetch_page(url)
+
+    if not html:
+        return {
+            "status": "UNKNOWN",
+            "deadline": None,
+            "application_url": None,
+            "reason": "Page could not be accessed",
+        }
+
+    text = clean_text(html)
+
+    # --------------------------------
+    # 1. Explicit status
+    # --------------------------------
+
+    explicit_status = check_explicit_status(
+        text
+    )
+
+    if explicit_status == "CLOSED":
+        return {
+            "status": "CLOSED",
+            "deadline": None,
+            "application_url": None,
+            "reason": "Page contains a closed-status message",
+        }
+
+    # --------------------------------
+    # 2. Deadline
+    # --------------------------------
+
+    deadline = extract_close_date(
+        text
+    )
+
+    today = datetime.now().date()
+
+    if deadline:
+
+        if deadline < today:
+
+            return {
+                "status": "CLOSED",
+                "deadline": deadline.isoformat(),
+                "application_url": None,
+                "reason": "Deadline has passed",
+            }
+
+        return {
+            "status": "OPEN",
+            "deadline": deadline.isoformat(),
+            "application_url": find_apply_link(
+                html,
+                url
+            ),
+            "reason": "Deadline has not passed",
+        }
+
+    # --------------------------------
+    # 3. Open Until Filled
+    # --------------------------------
+
+    if "open until filled" in text:
+
+        return {
+            "status": "OPEN",
+            "deadline": None,
+            "application_url": find_apply_link(
+                html,
+                url
+            ),
+            "reason": "Open until filled",
+        }
+
+    # --------------------------------
+    # 4. Application link/button
+    # --------------------------------
+
+    application_url = find_apply_link(
+        html,
+        url
+    )
+
+    if application_url:
+
+        return {
+            "status": "OPEN",
+            "deadline": None,
+            "application_url": application_url,
+            "reason": "Application link found",
+        }
+
+    # --------------------------------
+    # 5. Cannot confirm
+    # --------------------------------
 
     return {
-        "status": status,
-        "url": url,
+        "status": "UNKNOWN",
+        "deadline": None,
+        "application_url": None,
+        "reason": "Could not confirm application status",
     }
+
+
+def verify_job_application(url):
+    """
+    Public function used by main.py.
+    """
+
+    result = check_application_status(
+        url
+    )
+
+    return result
