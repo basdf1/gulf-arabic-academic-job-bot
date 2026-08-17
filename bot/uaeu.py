@@ -1,8 +1,11 @@
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 
 BASE_URL = "https://jobs.uaeu.ac.ae"
+JOBS_URL = "https://jobs.uaeu.ac.ae/"
+
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -11,28 +14,12 @@ USER_AGENT = (
 )
 
 
-# UAEU posting IDs are discovered from the official
-# recruitment website/search results.
-#
-# We start with a range and let the checker decide
-# whether each posting is valid and still open.
-
-START_ID = 4000
-END_ID = 5300
-
-
-def fetch_job(job_id):
+def fetch_page(url, timeout=30):
     """
-    Try to retrieve one UAEU job posting.
+    Download a UAEU page.
     """
-
-    url = (
-        f"{BASE_URL}/Postings/PostingDetails/"
-        f"{job_id}"
-    )
 
     try:
-
         response = requests.get(
             url,
             headers={
@@ -41,87 +28,162 @@ def fetch_job(job_id):
                     "en-US,en;q=0.9,ar;q=0.8"
                 ),
             },
-            timeout=15,
-            allow_redirects=True,
+            timeout=timeout,
         )
 
-        if response.status_code != 200:
-            return None
+        response.raise_for_status()
 
-        html = response.text
+        return response.text
 
-        # Make sure this is actually a job page.
-        if "Job Description" not in html:
-            return None
-
-        soup = BeautifulSoup(
-            html,
-            "html.parser"
+    except requests.RequestException as error:
+        print(
+            f"[UAEU] Request failed: {error}"
         )
-
-        title = soup.title.get_text(
-            " ",
-            strip=True
-        ) if soup.title else ""
-
-        text = soup.get_text(
-            " ",
-            strip=True
-        )
-
-        # Try to get the actual job title.
-        heading = soup.find(
-            ["h1", "h2", "h3"]
-        )
-
-        if heading:
-            heading_text = heading.get_text(
-                " ",
-                strip=True
-            )
-
-            if heading_text:
-                title = heading_text
-
-        return {
-            "title": title,
-            "organization": (
-                "United Arab Emirates University"
-            ),
-            "country": (
-                "United Arab Emirates"
-            ),
-            "city": "Al Ain",
-            "source": "UAEU Official",
-            "job_url": url,
-            "application_url": url,
-            "posted_date": None,
-            "deadline": None,
-            "description": text,
-        }
-
-    except requests.RequestException:
         return None
+
+
+def extract_job_links(html):
+    """
+    Extract UAEU job posting links from HTML.
+    """
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    links = []
+
+    for link in soup.find_all(
+        "a",
+        href=True,
+    ):
+
+        href = link.get("href")
+
+        if not href:
+            continue
+
+        if "Postings/PostingDetails" not in href:
+            continue
+
+        job_url = urljoin(
+            BASE_URL,
+            href,
+        )
+
+        if job_url not in links:
+            links.append(job_url)
+
+    return links
+
+
+def fetch_job(job_url):
+    """
+    Download and parse one UAEU job page.
+    """
+
+    html = fetch_page(
+        job_url,
+        timeout=20,
+    )
+
+    if not html:
+        return None
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    # Page title
+    page_title = ""
+
+    if soup.title:
+        page_title = soup.title.get_text(
+            " ",
+            strip=True,
+        )
+
+    # Main visible text
+    description = soup.get_text(
+        " ",
+        strip=True,
+    )
+
+    # Try to find a heading
+    heading = soup.find(
+        ["h1", "h2", "h3"],
+    )
+
+    title = ""
+
+    if heading:
+        title = heading.get_text(
+            " ",
+            strip=True,
+        )
+
+    if not title:
+        title = page_title
+
+    return {
+        "title": title,
+        "organization": (
+            "United Arab Emirates University"
+        ),
+        "country": (
+            "United Arab Emirates"
+        ),
+        "city": "Al Ain",
+        "source": "UAEU Official",
+        "job_url": job_url,
+        "application_url": job_url,
+        "posted_date": None,
+        "deadline": None,
+        "description": description,
+    }
 
 
 def collect_uaeu_jobs():
     """
-    Discover UAEU job postings.
+    Collect currently discoverable UAEU jobs.
 
-    We scan posting IDs because the main UAEU
-    vacancy page loads its content dynamically.
+    We first try the official jobs page instead
+    of scanning thousands of posting IDs.
     """
 
-    print("[UAEU] Starting job discovery...")
+    print(
+        "[UAEU] Collecting current jobs..."
+    )
+
+    html = fetch_page(
+        JOBS_URL,
+        timeout=30,
+    )
+
+    if not html:
+        print(
+            "[UAEU] Could not access jobs page."
+        )
+        return []
+
+    job_links = extract_job_links(
+        html
+    )
+
+    print(
+        f"[UAEU] Job links found: "
+        f"{len(job_links)}"
+    )
 
     jobs = []
 
-    for job_id in range(
-        START_ID,
-        END_ID + 1
-    ):
+    for job_url in job_links:
 
-        job = fetch_job(job_id)
+        job = fetch_job(
+            job_url
+        )
 
         if job is None:
             continue
@@ -130,11 +192,10 @@ def collect_uaeu_jobs():
 
         print(
             f"[UAEU] Found: "
-            f"{job['title']} "
-            f"({job_id})"
+            f"{job['title']}"
         )
 
-    # Remove duplicate URLs.
+    # Remove duplicate URLs
     unique_jobs = {}
 
     for job in jobs:
@@ -147,7 +208,7 @@ def collect_uaeu_jobs():
     )
 
     print(
-        f"[UAEU] Total discovered: "
+        f"[UAEU] Total collected: "
         f"{len(jobs)}"
     )
 
