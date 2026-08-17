@@ -1,26 +1,10 @@
-import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 from datetime import datetime
+import re
 
 
 BASE_URL = "https://jobs.uaeu.ac.ae"
-
-SEARCH_URLS = [
-    (
-        "https://jobs.uaeu.ac.ae/search.jsp"
-        "?pager.offset={offset}"
-        "&sortBy=postingPostingNo"
-        "&sortOrder=asc"
-    ),
-    (
-        "https://jobs.uaeu.ac.ae/search"
-        "?pager.offset={offset}"
-        "&sortBy=postingPostingNo"
-        "&sortOrder=asc"
-    ),
-]
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -30,326 +14,161 @@ USER_AGENT = (
 
 HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 
-def fetch_page(url, timeout=20):
+def fetch_job(job_id):
     """
-    Download a UAEU page.
+    Fetch one UAEU job posting.
     """
 
+    url = (
+        f"{BASE_URL}/Postings/PostingDetails/"
+        f"{job_id}"
+    )
+
     try:
+
         response = requests.get(
             url,
             headers=HEADERS,
-            timeout=timeout,
-            allow_redirects=True,
+            timeout=10,
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            return None
 
-        return response.text
+        html = response.text
 
-    except requests.RequestException as error:
-        print(
-            f"[UAEU] Request failed: {error}"
-        )
-        return None
-
-
-def extract_job_links(html):
-    """
-    Extract UAEU posting links from the search results.
-    """
-
-    if not html:
-        return []
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    links = []
-
-    for anchor in soup.find_all(
-        "a",
-        href=True,
-    ):
-
-        href = anchor["href"].strip()
-
-        if "Postings/PostingDetails" not in href:
-            continue
-
-        url = urljoin(
-            BASE_URL,
-            href,
+        soup = BeautifulSoup(
+            html,
+            "html.parser",
         )
 
-        if url not in links:
-            links.append(url)
-
-    return links
-
-
-def collect_job_links():
-    """
-    Collect job links from UAEU's search pages.
-
-    We use pagination instead of scanning thousands
-    of random posting IDs.
-    """
-
-    all_links = set()
-
-    # UAEU currently has roughly a hundred current vacancies,
-    # so three pages of 50 is enough in normal operation.
-    offsets = [0, 50, 100, 150]
-
-    for offset in offsets:
-
-        print(
-            f"[UAEU] Reading search page "
-            f"offset={offset}..."
-        )
-
-        html = None
-
-        for template in SEARCH_URLS:
-
-            url = template.format(
-                offset=offset
-            )
-
-            html = fetch_page(url)
-
-            if html:
-                links = extract_job_links(
-                    html
-                )
-
-                if links:
-                    break
-
-        if not html:
-            print(
-                f"[UAEU] Could not read "
-                f"offset={offset}"
-            )
-            continue
-
-        links = extract_job_links(
-            html
-        )
-
-        print(
-            f"[UAEU] Links found on page: "
-            f"{len(links)}"
-        )
-
-        if not links:
-            # No more pages.
-            break
-
-        before = len(all_links)
-
-        all_links.update(links)
-
-        # If this page gave us nothing new,
-        # stop pagination.
-        if len(all_links) == before:
-            break
-
-    return sorted(all_links)
-
-
-def extract_close_date(text):
-    """
-    Extract the UAEU close date from a job page.
-
-    Returns:
-        YYYY-MM-DD
-        or None for Open Until Filled / unknown.
-    """
-
-    if not text:
-        return None
-
-    normalized = re.sub(
-        r"\s+",
-        " ",
-        text,
-    ).strip()
-
-    # UAEU uses:
-    #
-    # Close Date
-    # 31/08/2026
-    #
-    # or:
-    #
-    # Close Date: open until filled
-
-    if re.search(
-        r"open\s+until\s+filled",
-        normalized,
-        re.IGNORECASE,
-    ):
-        return None
-
-    match = re.search(
-        r"Close Date.*?"
-        r"(\d{1,2})/(\d{1,2})/(\d{4})",
-        normalized,
-        re.IGNORECASE,
-    )
-
-    if not match:
-        return None
-
-    day = int(match.group(1))
-    month = int(match.group(2))
-    year = int(match.group(3))
-
-    try:
-        date_value = datetime(
-            year,
-            month,
-            day,
-        )
-
-        return date_value.strftime(
-            "%Y-%m-%d"
-        )
-
-    except ValueError:
-        return None
-
-
-def parse_job(job_url):
-    """
-    Download and parse one UAEU job posting.
-    """
-
-    html = fetch_page(
-        job_url,
-        timeout=20,
-    )
-
-    if not html:
-        return None
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    text = soup.get_text(
-        " ",
-        strip=True,
-    )
-
-    # --------------------------------------------------------
-    # Title
-    # --------------------------------------------------------
-
-    title = ""
-
-    # Try common heading elements first.
-    for tag in ["h1", "h2", "h3"]:
-
-        heading = soup.find(tag)
-
-        if heading:
-
-            candidate = heading.get_text(
-                " ",
-                strip=True,
-            )
-
-            if candidate:
-                title = candidate
-                break
-
-    # Fallback to page title.
-    if not title and soup.title:
-
-        title = soup.title.get_text(
+        text = soup.get_text(
             " ",
             strip=True,
         )
 
-    # Remove common website suffix.
-    title = re.sub(
-        r"\s*\|\s*UAEU.*$",
-        "",
-        title,
-        flags=re.IGNORECASE,
-    ).strip()
+        if "Job Description" not in text:
+            return None
 
-    # --------------------------------------------------------
-    # Close date
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # TITLE
+        # ----------------------------------------------------
 
-    close_date = extract_close_date(
-        text
-    )
+        title = ""
 
-    return {
-        "title": title,
+        for tag in ["h1", "h2", "h3"]:
 
-        "organization": (
-            "United Arab Emirates University"
-        ),
+            heading = soup.find(tag)
 
-        "country": (
-            "United Arab Emirates"
-        ),
+            if heading:
 
-        "city": "Al Ain",
+                title = heading.get_text(
+                    " ",
+                    strip=True,
+                )
 
-        "source": "UAEU Official",
+                if title:
+                    break
 
-        "job_url": job_url,
+        if not title and soup.title:
 
-        "application_url": job_url,
+            title = soup.title.get_text(
+                " ",
+                strip=True,
+            )
 
-        "posted_date": None,
+        # ----------------------------------------------------
+        # CLOSE DATE
+        # ----------------------------------------------------
 
-        "deadline": close_date,
+        deadline = None
 
-        "description": text,
-    }
+        match = re.search(
+            r"Close Date.*?"
+            r"(\d{1,2}/\d{1,2}/\d{4})",
+            text,
+            re.IGNORECASE,
+        )
+
+        if match:
+
+            try:
+
+                deadline = datetime.strptime(
+                    match.group(1),
+                    "%d/%m/%Y",
+                ).strftime(
+                    "%Y-%m-%d"
+                )
+
+            except ValueError:
+                deadline = None
+
+        return {
+            "title": title,
+
+            "organization":
+                "United Arab Emirates University",
+
+            "country":
+                "United Arab Emirates",
+
+            "city":
+                "Al Ain",
+
+            "source":
+                "UAEU Official",
+
+            "job_url":
+                url,
+
+            "application_url":
+                url,
+
+            "posted_date":
+                None,
+
+            "deadline":
+                deadline,
+
+            "description":
+                text,
+        }
+
+    except requests.RequestException:
+        return None
 
 
 def collect_uaeu_jobs():
     """
-    Main UAEU collector.
+    Collect recent UAEU postings.
 
-    1. Get current vacancy links.
-    2. Open each official posting.
-    3. Return structured jobs.
+    We use a limited recent ID window instead of
+    scanning thousands of old postings.
     """
 
     print(
-        "[UAEU] Collecting current jobs..."
-    )
-
-    job_links = collect_job_links()
-
-    print(
-        f"[UAEU] Total job links found: "
-        f"{len(job_links)}"
+        "[UAEU] Collecting recent postings..."
     )
 
     jobs = []
 
-    for job_url in job_links:
+    # Current UAEU postings are around this range.
+    # Keep the range limited so GitHub Actions stays fast.
+    start_id = 5000
+    end_id = 5300
 
-        job = parse_job(
-            job_url
+    for job_id in range(
+        start_id,
+        end_id + 1,
+    ):
+
+        job = fetch_job(
+            job_id
         )
 
         if job is None:
@@ -365,14 +184,12 @@ def collect_uaeu_jobs():
 
         print(
             f"[UAEU] Found: "
-            f"{job['title']} | "
+            f"{job['title']} "
+            f"({job_id}) | "
             f"Deadline: {deadline}"
         )
 
-    # --------------------------------------------------------
     # Remove duplicate URLs
-    # --------------------------------------------------------
-
     unique_jobs = {}
 
     for job in jobs:
