@@ -8,7 +8,9 @@ from .database import (
 
 from .filters import is_relevant_job
 from .checker import verify_job_application
+
 from .uaeu import collect_uaeu_jobs
+from .KSA import collect_ksa_jobs
 
 
 def process_job(job):
@@ -191,6 +193,7 @@ def run():
     """
 
     print(flush=True)
+
     print(
         "=" * 60,
         flush=True,
@@ -226,10 +229,43 @@ def run():
         flush=True,
     )
 
-    jobs = collect_uaeu_jobs()
+    uaeu_jobs = collect_uaeu_jobs()
 
     print(
-        f"[MAIN] Jobs collected: {len(jobs)}",
+        f"[MAIN] UAEU jobs collected: "
+        f"{len(uaeu_jobs)}",
+        flush=True,
+    )
+
+    # --------------------------------
+    # Collect KSA jobs
+    # --------------------------------
+
+    print(
+        "[MAIN] Starting KSA collector...",
+        flush=True,
+    )
+
+    ksa_jobs = collect_ksa_jobs()
+
+    print(
+        f"[MAIN] KSA jobs collected: "
+        f"{len(ksa_jobs)}",
+        flush=True,
+    )
+
+    # --------------------------------
+    # Combine all jobs
+    # --------------------------------
+
+    jobs = (
+        uaeu_jobs
+        + ksa_jobs
+    )
+
+    print(
+        f"[MAIN] Total jobs collected: "
+        f"{len(jobs)}",
         flush=True,
     )
 
