@@ -1,7 +1,9 @@
-import requests
-from bs4 import BeautifulSoup
-from datetime import datetime
 import re
+import requests
+
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 
 BASE_URL = "https://jobs.uaeu.ac.ae"
@@ -14,14 +16,26 @@ USER_AGENT = (
 
 HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
 }
 
 
+# ------------------------------------------------------------
+# SETTINGS
+# ------------------------------------------------------------
+
+START_ID = 5000
+END_ID = 5300
+
+REQUEST_TIMEOUT = 5
+MAX_WORKERS = 20
+
+
+# ------------------------------------------------------------
+# FETCH ONE JOB
+# ------------------------------------------------------------
+
 def fetch_job(job_id):
-    """
-    Fetch one UAEU job posting.
-    """
 
     url = (
         f"{BASE_URL}/Postings/PostingDetails/"
@@ -33,13 +47,17 @@ def fetch_job(job_id):
         response = requests.get(
             url,
             headers=HEADERS,
-            timeout=10,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
         )
 
         if response.status_code != 200:
             return None
 
         html = response.text
+
+        if not html:
+            return None
 
         soup = BeautifulSoup(
             html,
@@ -51,6 +69,7 @@ def fetch_job(job_id):
             strip=True,
         )
 
+        # Not a real posting
         if "Job Description" not in text:
             return None
 
@@ -60,18 +79,21 @@ def fetch_job(job_id):
 
         title = ""
 
-        for tag in ["h1", "h2", "h3"]:
+        for tag in ("h1", "h2", "h3"):
 
             heading = soup.find(tag)
 
             if heading:
 
-                title = heading.get_text(
+                candidate = heading.get_text(
                     " ",
                     strip=True,
                 )
 
-                if title:
+                if candidate:
+
+                    title = candidate
+
                     break
 
         if not title and soup.title:
@@ -81,32 +103,53 @@ def fetch_job(job_id):
                 strip=True,
             )
 
+        # Clean title
+        title = re.sub(
+            r"\s*\|\s*UAEU.*$",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        ).strip()
+
         # ----------------------------------------------------
         # CLOSE DATE
         # ----------------------------------------------------
 
         deadline = None
 
-        match = re.search(
-            r"Close Date.*?"
+        date_match = re.search(
+            r"Close\s*Date.*?"
             r"(\d{1,2}/\d{1,2}/\d{4})",
             text,
-            re.IGNORECASE,
+            flags=re.IGNORECASE,
         )
 
-        if match:
+        if date_match:
 
             try:
 
                 deadline = datetime.strptime(
-                    match.group(1),
+                    date_match.group(1),
                     "%d/%m/%Y",
                 ).strftime(
                     "%Y-%m-%d"
                 )
 
             except ValueError:
+
                 deadline = None
+
+        # ----------------------------------------------------
+        # OPEN UNTIL FILLED
+        # ----------------------------------------------------
+
+        if re.search(
+            r"open\s+until\s+filled",
+            text,
+            flags=re.IGNORECASE,
+        ):
+
+            deadline = None
 
         return {
             "title": title,
@@ -140,56 +183,115 @@ def fetch_job(job_id):
         }
 
     except requests.RequestException:
+
+        return None
+
+    except Exception as error:
+
+        print(
+            f"[UAEU] Error on {job_id}: {error}",
+            flush=True,
+        )
+
         return None
 
 
-def collect_uaeu_jobs():
-    """
-    Collect recent UAEU postings.
+# ------------------------------------------------------------
+# COLLECT JOBS
+# ------------------------------------------------------------
 
-    We use a limited recent ID window instead of
-    scanning thousands of old postings.
-    """
+def collect_uaeu_jobs():
 
     print(
-        "[UAEU] Collecting recent postings..."
+        "[UAEU] Collector started",
+        flush=True,
+    )
+
+    print(
+        f"[UAEU] Checking IDs "
+        f"{START_ID}-{END_ID}",
+        flush=True,
+    )
+
+    job_ids = range(
+        START_ID,
+        END_ID + 1,
     )
 
     jobs = []
 
-    # Current UAEU postings are around this range.
-    # Keep the range limited so GitHub Actions stays fast.
-    start_id = 5000
-    end_id = 5300
+    completed = 0
 
-    for job_id in range(
-        start_id,
-        end_id + 1,
-    ):
+    # --------------------------------------------------------
+    # PARALLEL REQUESTS
+    # --------------------------------------------------------
 
-        job = fetch_job(
-            job_id
-        )
+    with ThreadPoolExecutor(
+        max_workers=MAX_WORKERS
+    ) as executor:
 
-        if job is None:
-            continue
+        futures = {
+            executor.submit(
+                fetch_job,
+                job_id,
+            ): job_id
+            for job_id in job_ids
+        }
 
-        jobs.append(job)
+        for future in as_completed(
+            futures
+        ):
 
-        deadline = (
-            job["deadline"]
-            if job["deadline"]
-            else "Open Until Filled"
-        )
+            completed += 1
 
-        print(
-            f"[UAEU] Found: "
-            f"{job['title']} "
-            f"({job_id}) | "
-            f"Deadline: {deadline}"
-        )
+            job_id = futures[future]
 
-    # Remove duplicate URLs
+            try:
+
+                job = future.result()
+
+            except Exception as error:
+
+                print(
+                    f"[UAEU] Worker error "
+                    f"{job_id}: {error}",
+                    flush=True,
+                )
+
+                job = None
+
+            if job:
+
+                jobs.append(job)
+
+                deadline = (
+                    job["deadline"]
+                    if job["deadline"]
+                    else "Open Until Filled"
+                )
+
+                print(
+                    f"[UAEU] FOUND "
+                    f"{job['title']} "
+                    f"({job_id}) | "
+                    f"Deadline: {deadline}",
+                    flush=True,
+                )
+
+            # Progress every 25 requests
+            if completed % 25 == 0:
+
+                print(
+                    f"[UAEU] Progress: "
+                    f"{completed}/"
+                    f"{END_ID - START_ID + 1}",
+                    flush=True,
+                )
+
+    # --------------------------------------------------------
+    # REMOVE DUPLICATES
+    # --------------------------------------------------------
+
     unique_jobs = {}
 
     for job in jobs:
@@ -203,8 +305,9 @@ def collect_uaeu_jobs():
     )
 
     print(
-        f"[UAEU] Total collected: "
-        f"{len(jobs)}"
+        f"[UAEU] Collection finished. "
+        f"Jobs found: {len(jobs)}",
+        flush=True,
     )
 
     return jobs
