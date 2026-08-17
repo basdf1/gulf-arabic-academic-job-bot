@@ -2,100 +2,165 @@ from .database import (
     init_database,
     add_job,
     job_exists,
-    update_job_status,
 )
 
 from .filters import is_relevant_job
 from .checker import verify_job_application
-from .sources import collect_jobs
+from .uaeu import collect_uaeu_jobs
 
 
 def process_job(job):
     """
-    Process one collected job.
-
-    Pipeline:
-    1. Filter
-    2. Check duplicate
-    3. Verify application status
-    4. Save if relevant
+    Process one job through the complete pipeline.
     """
 
     title = job.get("title", "")
     description = job.get("description", "")
-    location = job.get("country", "")
+    country = job.get("country", "")
     job_url = job.get("job_url", "")
 
-    # -------------------------
-    # 1. Relevance filter
-    # -------------------------
+    print()
+    print("-" * 60)
+    print(f"JOB: {title}")
+    print(f"COUNTRY: {country}")
+    print(f"URL: {job_url}")
+
+    # --------------------------------
+    # 1. Check relevance
+    # --------------------------------
 
     if not is_relevant_job(
         title=title,
         description=description,
-        location=location,
+        location=country,
     ):
+
+        print("[FILTER] Rejected")
+
         return {
-            "result": "REJECTED",
-            "reason": "Does not match search criteria",
+            "result": "REJECTED"
         }
 
-    # -------------------------
-    # 2. Duplicate check
-    # -------------------------
+    print("[FILTER] Relevant")
+
+    # --------------------------------
+    # 2. Check duplicate
+    # --------------------------------
 
     if job_exists(job_url):
+
+        print("[DATABASE] Already exists")
+
         return {
-            "result": "DUPLICATE",
-            "reason": "Job already exists",
+            "result": "DUPLICATE"
         }
 
-    # -------------------------
+    # --------------------------------
     # 3. Verify application
-    # -------------------------
+    # --------------------------------
 
-    verification = verify_job_application(job_url)
+    print("[CHECKER] Checking application...")
 
-    status = verification["status"]
+    verification = verify_job_application(
+        job_url
+    )
 
+    status = verification.get(
+        "status",
+        "UNKNOWN"
+    )
+
+    deadline = verification.get(
+        "deadline"
+    )
+
+    application_url = verification.get(
+        "application_url"
+    )
+
+    reason = verification.get(
+        "reason",
+        ""
+    )
+
+    print(
+        f"[CHECKER] Status: {status}"
+    )
+
+    if deadline:
+        print(
+            f"[CHECKER] Deadline: {deadline}"
+        )
+
+    print(
+        f"[CHECKER] Reason: {reason}"
+    )
+
+    # --------------------------------
     # IMPORTANT:
-    # UNKNOWN is NOT treated as OPEN.
+    # UNKNOWN is NOT OPEN
+    # --------------------------------
 
     if status != "OPEN":
+
+        print(
+            "[RESULT] Not confirmed open"
+        )
+
         return {
             "result": status,
-            "reason": "Application is not confirmed open",
+            "deadline": deadline,
         }
 
-    # -------------------------
-    # 4. Save job
-    # -------------------------
+    # --------------------------------
+    # 4. Save confirmed open job
+    # --------------------------------
 
     job_id = add_job(
         title=title,
-        organization=job.get("organization", ""),
-        country=job.get("country", ""),
-        city=job.get("city", ""),
-        source=job.get("source", ""),
-        job_url=job_url,
-        application_url=job.get(
-            "application_url",
-            job_url,
+        organization=job.get(
+            "organization",
+            ""
         ),
-        posted_date=job.get("posted_date"),
-        deadline=job.get("deadline"),
+        country=country,
+        city=job.get(
+            "city",
+            ""
+        ),
+        source=job.get(
+            "source",
+            ""
+        ),
+        job_url=job_url,
+        application_url=(
+            application_url
+            or job_url
+        ),
+        posted_date=job.get(
+            "posted_date"
+        ),
+        deadline=deadline,
         status="OPEN",
     )
 
     if job_id is None:
+
+        print(
+            "[DATABASE] Could not add job"
+        )
+
         return {
-            "result": "DUPLICATE",
-            "reason": "Job already exists",
+            "result": "DUPLICATE"
         }
+
+    print(
+        "[RESULT] NEW OPEN JOB!"
+    )
 
     return {
         "result": "NEW_OPEN_JOB",
         "job_id": job_id,
+        "deadline": deadline,
     }
 
 
@@ -104,19 +169,36 @@ def run():
     Main bot process.
     """
 
+    print()
     print("=" * 60)
-    print("Gulf Arabic Academic Job Bot")
+    print(
+        "GULF ARABIC ACADEMIC JOB BOT"
+    )
     print("=" * 60)
 
-    # Create database
+    # --------------------------------
+    # Database
+    # --------------------------------
+
     init_database()
 
-    print("[1] Database ready")
+    print(
+        "[DATABASE] Ready"
+    )
 
-    # Collect jobs
-    jobs = collect_jobs()
+    # --------------------------------
+    # Collect UAEU jobs
+    # --------------------------------
 
-    print(f"[2] Collected jobs: {len(jobs)}")
+    jobs = collect_uaeu_jobs()
+
+    print(
+        f"[MAIN] Jobs collected: {len(jobs)}"
+    )
+
+    # --------------------------------
+    # Statistics
+    # --------------------------------
 
     statistics = {
         "NEW_OPEN_JOB": 0,
@@ -126,28 +208,37 @@ def run():
         "UNKNOWN": 0,
     }
 
-    # Process every job
+    # --------------------------------
+    # Process jobs
+    # --------------------------------
+
     for job in jobs:
 
         result = process_job(job)
 
-        result_type = result.get("result")
+        result_type = result.get(
+            "result",
+            "UNKNOWN"
+        )
 
         if result_type in statistics:
+
             statistics[result_type] += 1
 
-        print(
-            f"[JOB] {job.get('title', 'Unknown')} "
-            f"-> {result_type}"
-        )
+    # --------------------------------
+    # Final report
+    # --------------------------------
 
     print()
     print("=" * 60)
-    print("RESULT")
+    print("FINAL RESULT")
     print("=" * 60)
 
     for key, value in statistics.items():
-        print(f"{key}: {value}")
+
+        print(
+            f"{key}: {value}"
+        )
 
     print("=" * 60)
 
