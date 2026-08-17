@@ -15,12 +15,15 @@ USER_AGENT = (
 
 
 def fetch_page(url):
-    """Download UAEU jobs page."""
+    """Download a page from UAEU."""
 
     try:
         response = requests.get(
             url,
-            headers={"User-Agent": USER_AGENT},
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+            },
             timeout=30,
         )
 
@@ -35,42 +38,50 @@ def fetch_page(url):
 
 def collect_uaeu_jobs():
     """
-    Collect current jobs from UAE University.
-
-    UAEU publishes the job title and closing date
-    on its official recruitment portal.
+    Collect jobs from the official UAEU recruitment website.
     """
+
+    print("[UAEU] Collecting jobs...")
 
     html = fetch_page(JOBS_URL)
 
     if not html:
+        print("[UAEU] Could not access jobs page.")
         return []
 
     soup = BeautifulSoup(html, "html.parser")
 
     jobs = []
 
-    # Find job posting links.
     for link in soup.find_all("a", href=True):
 
-        title = link.get_text(" ", strip=True)
+        title = link.get_text(
+            " ",
+            strip=True
+        )
 
         href = link.get("href")
 
         if not title or not href:
             continue
 
-        # UAEU job posting URLs contain Postings/PostingDetails
         if "Postings/PostingDetails" not in href:
             continue
 
-        job_url = urljoin(BASE_URL, href)
+        job_url = urljoin(
+            BASE_URL,
+            href
+        )
 
         jobs.append(
             {
                 "title": title,
-                "organization": "United Arab Emirates University",
-                "country": "United Arab Emirates",
+                "organization": (
+                    "United Arab Emirates University"
+                ),
+                "country": (
+                    "United Arab Emirates"
+                ),
                 "city": "Al Ain",
                 "source": "UAEU Official",
                 "job_url": job_url,
@@ -81,10 +92,16 @@ def collect_uaeu_jobs():
             }
         )
 
-    # Remove duplicates
+    # Remove duplicate URLs
     unique_jobs = {}
 
     for job in jobs:
         unique_jobs[job["job_url"]] = job
 
-    return list(unique_jobs.values())
+    jobs = list(unique_jobs.values())
+
+    print(
+        f"[UAEU] Found {len(jobs)} job postings."
+    )
+
+    return jobs
