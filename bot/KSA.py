@@ -2,6 +2,7 @@ import re
 import requests
 
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -11,7 +12,7 @@ from datetime import datetime
 # ------------------------------------------------------------
 
 REQUEST_TIMEOUT = 10
-MAX_WORKERS = 15
+MAX_WORKERS = 10
 
 HEADERS = {
     "User-Agent": (
@@ -24,80 +25,105 @@ HEADERS = {
 
 
 # ------------------------------------------------------------
-# SAUDI UNIVERSITY SOURCES
+# OFFICIAL SAUDI SOURCES
 # ------------------------------------------------------------
 
 SOURCES = [
     {
-        "name": "King Saud University",
-        "country": "Saudi Arabia",
-        "city": "Riyadh",
-        "url": "https://dfpa.ksu.edu.sa/ar/facultyjobs",
-    },
-    {
         "name": "Prince Sultan University",
-        "country": "Saudi Arabia",
         "city": "Riyadh",
         "url": "https://psu.edu.sa/en/career",
+        "type": "career",
     },
     {
         "name": "Qassim University",
-        "country": "Saudi Arabia",
         "city": "Buraidah",
         "url": "https://www.qu.edu.sa/jobs/",
+        "type": "news",
     },
 ]
 
 
 # ------------------------------------------------------------
-# ACADEMIC FILTER
+# ACADEMIC KEYWORDS
 # ------------------------------------------------------------
 
 ACADEMIC_KEYWORDS = [
     "professor",
-    "associate professor",
     "assistant professor",
+    "associate professor",
+    "full professor",
     "faculty",
     "lecturer",
+    "instructor",
     "research",
     "researcher",
     "research assistant",
     "postdoctoral",
     "postdoc",
     "academic",
+
     "أستاذ",
     "أستاذ مشارك",
     "أستاذ مساعد",
+    "أستاذ متفرغ",
     "محاضر",
-    "باحث",
+    "مدرس",
     "معيد",
-    "هيئة تدريس",
+    "باحث",
+    "باحث مساعد",
+    "باحث ما بعد الدكتوراه",
+    "وظائف أكاديمية",
+    "وظائف أكاديمية",
+    "هيئة التدريس",
 ]
-
-
-def is_academic(title, description=""):
-
-    text = f"{title} {description}".lower()
-
-    return any(
-        keyword.lower() in text
-        for keyword in ACADEMIC_KEYWORDS
-    )
 
 
 # ------------------------------------------------------------
 # DATE PARSER
 # ------------------------------------------------------------
 
+MONTHS_AR = {
+    "يناير": 1,
+    "فبراير": 2,
+    "مارس": 3,
+    "أبريل": 4,
+    "ابريل": 4,
+    "مايو": 5,
+    "يونيو": 6,
+    "يوليو": 7,
+    "أغسطس": 8,
+    "اغسطس": 8,
+    "سبتمبر": 9,
+    "أكتوبر": 10,
+    "اكتوبر": 10,
+    "نوفمبر": 11,
+    "ديسمبر": 12,
+}
+
+
 def parse_date(text):
 
+    if not text:
+        return None
+
+    # English / numeric dates
     patterns = [
-        r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
-        r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
-        r"([A-Za-z]+\s+\d{1,2},\s+\d{4})",
+        (
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{4})",
+            ["%d/%m/%Y", "%d-%m-%Y"],
+        ),
+        (
+            r"([A-Za-z]+\s+\d{1,2},\s+\d{4})",
+            ["%B %d, %Y"],
+        ),
+        (
+            r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
+            ["%d %B %Y"],
+        ),
     ]
 
-    for pattern in patterns:
+    for pattern, formats in patterns:
 
         match = re.search(
             pattern,
@@ -110,17 +136,9 @@ def parse_date(text):
 
         value = match.group(1)
 
-        formats = [
-            "%d/%m/%Y",
-            "%d-%m-%Y",
-            "%d %B %Y",
-            "%B %d, %Y",
-        ]
-
         for fmt in formats:
 
             try:
-
                 return datetime.strptime(
                     value,
                     fmt,
@@ -129,118 +147,334 @@ def parse_date(text):
             except ValueError:
                 pass
 
+    # Arabic month dates
+    arabic_pattern = (
+        r"(\d{1,2})\s+("
+        + "|".join(MONTHS_AR.keys())
+        + r")\s+(\d{4})"
+    )
+
+    match = re.search(
+        arabic_pattern,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if match:
+
+        day = int(match.group(1))
+        month = MONTHS_AR[match.group(2)]
+        year = int(match.group(3))
+
+        try:
+
+            return datetime(
+                year,
+                month,
+                day,
+            ).strftime("%Y-%m-%d")
+
+        except ValueError:
+            pass
+
     return None
 
 
 # ------------------------------------------------------------
-# FETCH SOURCE
+# ACADEMIC CHECK
 # ------------------------------------------------------------
 
-def fetch_source(source):
+def is_academic(title, description=""):
+
+    text = (
+        f"{title} {description}"
+    ).lower()
+
+    return any(
+        keyword.lower() in text
+        for keyword in ACADEMIC_KEYWORDS
+    )
+
+
+# ------------------------------------------------------------
+# NORMALIZE TITLE
+# ------------------------------------------------------------
+
+def clean_title(title):
+
+    title = re.sub(
+        r"\s+",
+        " ",
+        title,
+    ).strip()
+
+    title = re.sub(
+        r"^\s*[-–—:|]\s*",
+        "",
+        title,
+    )
+
+    return title
+
+
+# ------------------------------------------------------------
+# FETCH PAGE
+# ------------------------------------------------------------
+
+def fetch_page(url):
 
     try:
 
         response = requests.get(
-            source["url"],
+            url,
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
 
         if response.status_code != 200:
-            return []
+            print(
+                f"[KSA] HTTP {response.status_code}: {url}",
+                flush=True,
+            )
+            return None
 
-        soup = BeautifulSoup(
+        if not response.text:
+            return None
+
+        return BeautifulSoup(
             response.text,
             "html.parser",
         )
 
-        jobs = []
+    except requests.RequestException as error:
 
-        # ----------------------------------------------------
-        # FIND LINKS / HEADINGS
-        # ----------------------------------------------------
-
-        elements = soup.find_all(
-            ["a", "h1", "h2", "h3", "h4"]
+        print(
+            f"[KSA] Request error: {error}",
+            flush=True,
         )
 
-        for element in elements:
+        return None
 
-            title = element.get_text(
+
+# ------------------------------------------------------------
+# PRINCE SULTAN UNIVERSITY
+# ------------------------------------------------------------
+
+def collect_psu(source):
+
+    soup = fetch_page(
+        source["url"]
+    )
+
+    if not soup:
+        return []
+
+    jobs = []
+
+    # PSU career page contains individual career links.
+    for link in soup.find_all("a", href=True):
+
+        title = link.get_text(
+            " ",
+            strip=True,
+        )
+
+        href = link.get("href")
+
+        if not title or not href:
+            continue
+
+        title = clean_title(title)
+
+        if not is_academic(title):
+            continue
+
+        job_url = urljoin(
+            source["url"],
+            href,
+        )
+
+        # Avoid navigation / repeated links
+        if "/career/" not in job_url:
+            continue
+
+        # Fetch individual job page
+        job_soup = fetch_page(
+            job_url
+        )
+
+        description = ""
+        deadline = None
+        posted_date = None
+
+        if job_soup:
+
+            page_text = job_soup.get_text(
                 " ",
                 strip=True,
             )
 
-            if not title:
-                continue
+            description = page_text
 
-            if not is_academic(title):
-                continue
+            # Application Due
+            due_match = re.search(
+                r"Application Due\s*:?\s*"
+                r"([A-Za-z]+\s+\d{1,2},\s+\d{4})",
+                page_text,
+                flags=re.IGNORECASE,
+            )
 
-            link = element.get("href")
+            if due_match:
+                deadline = parse_date(
+                    due_match.group(1)
+                )
 
-            if link:
+            # Posted
+            posted_match = re.search(
+                r"Posted\s*:?\s*"
+                r"([A-Za-z]+\s+\d{1,2},\s+\d{4})",
+                page_text,
+                flags=re.IGNORECASE,
+            )
 
-                if link.startswith("/"):
-                    base = re.match(
-                        r"https?://[^/]+",
-                        source["url"],
+            if posted_match:
+                posted_date = parse_date(
+                    posted_match.group(1)
+                )
+
+            # Better title
+            heading = job_soup.find(
+                ["h1", "h2"]
+            )
+
+            if heading:
+
+                heading_text = heading.get_text(
+                    " ",
+                    strip=True,
+                )
+
+                if heading_text:
+                    title = clean_title(
+                        heading_text
                     )
 
-                    if base:
-                        link = (
-                            base.group(0)
-                            + link
-                        )
+        if not is_academic(
+            title,
+            description,
+        ):
+            continue
 
-            else:
-                link = source["url"]
+        jobs.append({
+            "title": title,
+            "organization": source["name"],
+            "country": "Saudi Arabia",
+            "city": source["city"],
+            "source": "Official University",
+            "job_url": job_url,
+            "application_url": job_url,
+            "posted_date": posted_date,
+            "deadline": deadline,
+            "description": description,
+        })
 
-            jobs.append({
-                "title": title,
+    return jobs
 
-                "organization":
-                    source["name"],
 
-                "country":
-                    source["country"],
+# ------------------------------------------------------------
+# QASSIM UNIVERSITY
+# ------------------------------------------------------------
 
-                "city":
-                    source["city"],
+def collect_qassim(source):
 
-                "source":
-                    "Official University",
+    soup = fetch_page(
+        source["url"]
+    )
 
-                "job_url":
-                    link,
-
-                "application_url":
-                    link,
-
-                "posted_date":
-                    None,
-
-                "deadline":
-                    parse_date(title),
-
-                "description":
-                    title,
-            })
-
-        return jobs
-
-    except requests.RequestException:
-
+    if not soup:
         return []
 
-    except Exception as error:
+    jobs = []
 
-        print(
-            f"[KSA] Error: {error}",
-            flush=True,
+    # The Qassim jobs page is an announcement archive.
+    for link in soup.find_all(
+        "a",
+        href=True,
+    ):
+
+        title = link.get_text(
+            " ",
+            strip=True,
         )
 
-        return []
+        href = link.get("href")
+
+        if not title or not href:
+            continue
+
+        title = clean_title(title)
+
+        if not is_academic(title):
+            continue
+
+        job_url = urljoin(
+            source["url"],
+            href,
+        )
+
+        # Fetch announcement
+        job_soup = fetch_page(
+            job_url
+        )
+
+        description = title
+        deadline = None
+        posted_date = None
+
+        if job_soup:
+
+            description = job_soup.get_text(
+                " ",
+                strip=True,
+            )
+
+            posted_date = parse_date(
+                description
+            )
+
+            deadline = parse_date(
+                description
+            )
+
+        jobs.append({
+            "title": title,
+            "organization": source["name"],
+            "country": "Saudi Arabia",
+            "city": source["city"],
+            "source": "Official University",
+            "job_url": job_url,
+            "application_url": job_url,
+            "posted_date": posted_date,
+            "deadline": deadline,
+            "description": description,
+        })
+
+    return jobs
+
+
+# ------------------------------------------------------------
+# COLLECT ONE SOURCE
+# ------------------------------------------------------------
+
+def collect_source(source):
+
+    if source["type"] == "career":
+        return collect_psu(source)
+
+    if source["type"] == "news":
+        return collect_qassim(source)
+
+    return []
 
 
 # ------------------------------------------------------------
@@ -260,15 +494,19 @@ def collect_ksa_jobs():
         max_workers=MAX_WORKERS
     ) as executor:
 
-        futures = [
+        futures = {
             executor.submit(
-                fetch_source,
+                collect_source,
                 source,
-            )
+            ): source
             for source in SOURCES
-        ]
+        }
 
-        for future in as_completed(futures):
+        for future in as_completed(
+            futures
+        ):
+
+            source = futures[future]
 
             try:
 
@@ -287,6 +525,7 @@ def collect_ksa_jobs():
                     print(
                         f"[KSA] FOUND "
                         f"{job['title']} | "
+                        f"{job['organization']} | "
                         f"Deadline: {deadline}",
                         flush=True,
                     )
@@ -294,7 +533,8 @@ def collect_ksa_jobs():
             except Exception as error:
 
                 print(
-                    f"[KSA] Worker error: "
+                    f"[KSA] Worker error "
+                    f"{source['name']}: "
                     f"{error}",
                     flush=True,
                 )
